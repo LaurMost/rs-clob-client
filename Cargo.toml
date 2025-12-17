@@ -47,6 +47,7 @@ serde_with = { version = "3.16.1", features = ["chrono_0_4"] }
 sha2 = "0.10.9"
 strum_macros = "0.27.2"
 tokio_tungstenite = { version = "0.24.0", features = ["rustls-tls-webpki-roots"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
 url = "2.5.7"
 uuid = { version = "1.19.0", features = ["serde", "v4", "v7"] }
 
