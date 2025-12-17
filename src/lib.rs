@@ -5,6 +5,9 @@ pub mod clob;
 pub mod error;
 pub mod order_builder;
 pub mod types;
+pub mod ws;
+
+pub use ws::{Channel, WsClient, WsClientBuilder, WsConnection};
 
 use alloy::primitives::{Address, ChainId, address};
 use phf::phf_map;

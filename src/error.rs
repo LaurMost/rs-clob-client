@@ -7,6 +7,8 @@ use alloy::primitives::ruint::ParseError;
 use derive_builder::UninitializedFieldError;
 use hmac::digest::InvalidLength;
 use reqwest::{Method, StatusCode, header};
+use tokio::task::JoinError;
+use url::ParseError as UrlParseError;
 
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,8 +200,26 @@ impl From<InvalidLength> for Error {
     }
 }
 
+impl From<UrlParseError> for Error {
+    fn from(e: UrlParseError) -> Self {
+        Error::with_source(Kind::Validation, e)
+    }
+}
+
 impl From<serde_json::Error> for Error {
     fn from(e: serde_json::Error) -> Self {
+        Error::with_source(Kind::Internal, e)
+    }
+}
+
+impl From<tokio_tungstenite::tungstenite::Error> for Error {
+    fn from(e: tokio_tungstenite::tungstenite::Error) -> Self {
+        Error::with_source(Kind::Internal, e)
+    }
+}
+
+impl From<JoinError> for Error {
+    fn from(e: JoinError) -> Self {
         Error::with_source(Kind::Internal, e)
     }
 }
