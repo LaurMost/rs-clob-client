@@ -196,7 +196,7 @@ impl WsClient {
 
     /// Subscribe to market-level updates, yielding a stream of [`model::WsMessage`] instances.
     /// Errors encountered while deserializing messages or reconnecting will be sent on the
-    /// companion error channel returned by [`WsStream::errors`].
+    /// companion error channel returned by [`WsStream::split`].
     pub async fn subscribe_market_stream(
         base_url: impl AsRef<str>,
         asset_ids: impl IntoIterator<Item = impl Into<String>>,
@@ -209,7 +209,7 @@ impl WsClient {
 
     /// Subscribe to user-level updates, yielding a stream of [`model::WsMessage`] instances.
     /// Errors encountered while deserializing messages or reconnecting will be sent on the
-    /// companion error channel returned by [`WsStream::errors`].
+    /// companion error channel returned by [`WsStream::split`].
     pub async fn subscribe_user_stream(
         base_url: impl AsRef<str>,
         markets: impl IntoIterator<Item = impl Into<String>>,
@@ -283,9 +283,9 @@ pub struct WsStream {
 }
 
 impl WsStream {
-    /// Access the error channel carrying connection and deserialization failures.
-    pub fn errors(&mut self) -> &mut mpsc::Receiver<Error> {
-        &mut self.errors
+    /// Split this stream into its message and error receivers so they can be polled together.
+    pub fn split(self) -> (ReceiverStream<model::WsMessage>, mpsc::Receiver<Error>) {
+        (self.messages, self.errors)
     }
 }
 
