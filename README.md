@@ -34,6 +34,7 @@ This crate provides strongly typed request builders, authenticated endpoints, `a
 - **Order builders** for easy construction & signing
 - **Full `serde` support**
 - **Async-first design** with `reqwest`
+- **WebSocket subscriptions** for market and user events
 
 
 ## Getting started
@@ -59,6 +60,13 @@ cargo run --example unauthenticated
 ## Examples
 
 Some hand-picked examples. Please see `examples/` for more.
+
+- [authenticated](./examples/authenticated.rs)
+- [aws_authenticated](./examples/aws_authenticated.rs)
+- [builder_authenticated](./examples/builder_authenticated.rs)
+- [streaming](./examples/streaming.rs)
+- [websocket](./examples/websocket.rs)
+- [unauthenticated](./examples/unauthenticated.rs)
 
 ### Unauthenticated client (read-only)
 ```rust,no_run
@@ -104,6 +112,68 @@ async fn main() -> anyhow::Result<()> {
 
     let api_keys = client.api_keys().await?;
     println!("API keys: {api_keys:?}");
+
+    Ok(())
+}
+```
+
+### WebSocket subscriptions
+
+Use the WebSocket client for streaming market or user events. Market subscriptions do not require
+authentication. User subscriptions reuse the API credentials you obtained while authenticating the
+HTTP client, so you can share them directly without deriving a new key.
+
+```rust,no_run
+use std::str::FromStr as _;
+
+use alloy::signers::Signer as _;
+use alloy::signers::local::LocalSigner;
+use futures::StreamExt as _;
+use polymarket_client_sdk::clob::{Client, Config};
+use polymarket_client_sdk::ws::model::WsMessage;
+use polymarket_client_sdk::{POLYGON, PRIVATE_KEY_VAR, StreamConfig, WsClient};
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // Market channel
+    let mut market_stream = WsClient::market(
+        "wss://ws.polymarket.com/ws",
+        ["2f9b8c00-f8aa-4d7b-9ad5-3f6c955828b9"],
+    )?
+    .subscribe_stream(StreamConfig::default())
+    .await?;
+
+    tokio::spawn(async move {
+        while let Some(msg) = market_stream.next().await {
+            println!("market message: {msg:?}");
+        }
+    });
+
+    // User channel (requires credentials from an authenticated HTTP client)
+    let private_key = std::env::var(PRIVATE_KEY_VAR)?;
+    let signer = LocalSigner::from_str(&private_key)?.with_chain_id(Some(POLYGON));
+    let http_client = Client::new("https://clob.polymarket.com", Config::default())?
+        .authentication_builder(&signer)
+        .authenticate()
+        .await?;
+
+    let credentials = http_client.credentials().clone();
+
+    let mut user_stream = WsClient::user(
+        "wss://ws.polymarket.com/ws",
+        ["2438c3cb-4372-4ede-a3e6-cc19a610aa1c"],
+        credentials,
+    )?
+    .subscribe_stream(StreamConfig::default())
+    .await?;
+
+    while let Some(msg) = user_stream.next().await {
+        match msg {
+            WsMessage::OrderEvent(event) => println!("order event: {event:?}"),
+            WsMessage::TradeEvent(event) => println!("trade event: {event:?}"),
+            _ => (),
+        }
+    }
 
     Ok(())
 }

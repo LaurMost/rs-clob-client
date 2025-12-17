@@ -957,6 +957,15 @@ impl Client<Unauthenticated> {
 }
 
 impl<K: AuthKind> Client<Authenticated<K>> {
+    /// Returns the API credentials that were created or supplied during authentication.
+    ///
+    /// This can be used to share credentials with the WebSocket client for user channel
+    /// subscriptions without deriving a new key.
+    #[must_use]
+    pub fn credentials(&self) -> &Credentials {
+        &self.state().credentials
+    }
+
     /// Demotes this authenticated [`Client<Authenticated<K>>`] to an unauthenticated one
     pub fn deauthenticate(self) -> Result<Client<Unauthenticated>> {
         let inner = Arc::into_inner(self.inner).ok_or(Synchronization)?;
