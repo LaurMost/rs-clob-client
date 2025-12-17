@@ -61,7 +61,7 @@ cargo run --example unauthenticated
 Some hand-picked examples. Please see `examples/` for more.
 
 ### Unauthenticated client (read-only)
-```rust
+```rust,no_run
 use polymarket_client_sdk::clob::Client;
 
 #[tokio::main]
@@ -107,6 +107,36 @@ async fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
+```
+
+### Configuration
+
+`clob::Config` controls how the underlying HTTP client behaves:
+
+* `request_timeout`: Optional request timeout (`None` preserves reqwest's default).
+* `connect_timeout`: Optional connect timeout (`None` preserves reqwest's default).
+* `user_agent`: Optional user agent string (defaults to `rs_clob_client`).
+* `client_builder`: Optional closure that returns a preconfigured `reqwest::ClientBuilder` used as the base for the client.
+* `use_server_time`: Whether to fetch server time before signing requests.
+
+```rust
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+use std::sync::Arc;
+use std::time::Duration;
+
+use polymarket_client_sdk::clob::{Client, Config, ConfigBuilder};
+
+let config = ConfigBuilder::default()
+    .request_timeout(Some(Duration::from_secs(10)))
+    .connect_timeout(Some(Duration::from_secs(5)))
+    .user_agent(Some("custom-agent/1.0".to_string()))
+    .client_builder(Some(Arc::new(|| reqwest::Client::builder().no_proxy())))
+    .build()?;
+
+let client = Client::new("https://clob.polymarket.com", config)?;
+
+# Ok(())
+# }
 ```
 
 #### Proxy/Safe wallets

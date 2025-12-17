@@ -1,7 +1,14 @@
+//! Client for interacting with the Polymarket CLOB API.
+//!
+//! Configure HTTP behavior with [`Config`], including timeouts, user agent, and an optional
+//! [`reqwest::ClientBuilder`] override.
+
 use std::borrow::Cow;
+use std::fmt;
 use std::marker::PhantomData;
 use std::mem;
 use std::sync::Arc;
+use std::time::Duration;
 
 use alloy::dyn_abi::Eip712Domain;
 use alloy::primitives::{Address, U256};
@@ -236,7 +243,7 @@ impl<S: Signer, K: AuthKind> AuthenticationBuilder<'_, S, K> {
 /// [`Client`] is thread-safe
 ///
 /// Create an unauthenticated client:
-/// ```rust
+/// ```rust,no_run
 /// use polymarket_client_sdk::Result;
 /// use polymarket_client_sdk::clob::{Client, Config};
 ///
@@ -290,14 +297,41 @@ impl Default for Client<Unauthenticated> {
     }
 }
 
-/// Configuration for [`Client`]
-#[derive(Clone, Debug, Default, Builder)]
+/// Configuration for [`Client`].
+///
+/// The default mirrors reqwest's defaults while allowing you to opt into HTTP behaviors like
+/// request/connect timeouts, custom user agents, and providing your own [`reqwest::ClientBuilder`]
+/// to further customize the underlying client.
+#[derive(Clone, Default, Builder)]
 #[builder(pattern = "owned", build_fn(error = "Error"))]
 #[builder(default)]
 pub struct Config {
     /// Whether the [`Client`] will use the server time provided by Polymarket when creating auth
     /// headers. This adds another round trip to the requests.
     use_server_time: bool,
+    /// HTTP request timeout for the underlying [`reqwest::Client`].
+    request_timeout: Option<Duration>,
+    /// HTTP connect timeout for the underlying [`reqwest::Client`].
+    connect_timeout: Option<Duration>,
+    /// User agent sent with each request.
+    user_agent: Option<String>,
+    /// An optional override for configuring the [`reqwest::Client`].
+    client_builder: Option<Arc<dyn Fn() -> reqwest::ClientBuilder + Send + Sync>>,
+}
+
+impl fmt::Debug for Config {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Config")
+            .field("use_server_time", &self.use_server_time)
+            .field("request_timeout", &self.request_timeout)
+            .field("connect_timeout", &self.connect_timeout)
+            .field("user_agent", &self.user_agent)
+            .field(
+                "client_builder",
+                &self.client_builder.as_ref().map(|_| "Some"),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug)]
@@ -747,12 +781,28 @@ impl Client<Unauthenticated> {
     pub fn new(host: &str, config: Config) -> Result<Client<Unauthenticated>> {
         let mut headers = HeaderMap::new();
 
-        headers.insert("User-Agent", HeaderValue::from_static("rs_clob_client"));
         headers.insert("Accept", HeaderValue::from_static("*/*"));
         headers.insert("Connection", HeaderValue::from_static("keep-alive"));
         headers.insert("Content-Type", HeaderValue::from_static("application/json"));
+        let mut builder = config
+            .client_builder
+            .as_ref()
+            .map(|builder| builder())
+            .unwrap_or_else(ReqwestClient::builder)
+            .default_headers(headers);
 
-        let client = ReqwestClient::builder().default_headers(headers).build()?;
+        let user_agent = config.user_agent.as_deref().unwrap_or("rs_clob_client");
+        builder = builder.user_agent(user_agent);
+
+        if let Some(timeout) = config.request_timeout {
+            builder = builder.timeout(timeout);
+        }
+
+        if let Some(timeout) = config.connect_timeout {
+            builder = builder.connect_timeout(timeout);
+        }
+
+        let client = builder.build()?;
 
         Ok(Self {
             inner: Arc::new(ClientInner {
