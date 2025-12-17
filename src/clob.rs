@@ -19,10 +19,12 @@ use chrono::{NaiveDate, Utc};
 use dashmap::DashMap;
 use derive_builder::Builder;
 use futures::Stream;
-use reqwest::header::{HeaderMap, HeaderValue};
+use rand::{Rng as _, rng};
+use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
 use reqwest::{Client as ReqwestClient, Method, Request, StatusCode};
 use serde::de::DeserializeOwned;
 use serde_json::json;
+use tokio::time::sleep;
 use url::Url;
 
 use crate::auth::builder::{Builder, Config as BuilderConfig};
@@ -302,7 +304,7 @@ impl Default for Client<Unauthenticated> {
 /// The default mirrors reqwest's defaults while allowing you to opt into HTTP behaviors like
 /// request/connect timeouts, custom user agents, and providing your own [`reqwest::ClientBuilder`]
 /// to further customize the underlying client.
-#[derive(Clone, Default, Builder)]
+#[derive(Clone, Builder)]
 #[builder(pattern = "owned", build_fn(error = "Error"))]
 #[builder(default)]
 pub struct Config {
@@ -317,6 +319,27 @@ pub struct Config {
     user_agent: Option<String>,
     /// An optional override for configuring the [`reqwest::Client`].
     client_builder: Option<Arc<dyn Fn() -> reqwest::ClientBuilder + Send + Sync>>,
+    /// Maximum number of attempts for a request, including the initial call.
+    max_attempts: usize,
+    /// Base duration for exponential backoff between retry attempts.
+    base_backoff: Duration,
+    /// Maximum duration to wait between retry attempts.
+    max_backoff: Duration,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            use_server_time: false,
+            request_timeout: None,
+            connect_timeout: None,
+            user_agent: None,
+            client_builder: None,
+            max_attempts: 3,
+            base_backoff: Duration::from_millis(200),
+            max_backoff: Duration::from_secs(2),
+        }
+    }
 }
 
 impl fmt::Debug for Config {
@@ -330,6 +353,9 @@ impl fmt::Debug for Config {
                 "client_builder",
                 &self.client_builder.as_ref().map(|_| "Some"),
             )
+            .field("max_attempts", &self.max_attempts)
+            .field("base_backoff", &self.base_backoff)
+            .field("max_backoff", &self.max_backoff)
             .finish()
     }
 }
@@ -367,29 +393,64 @@ impl<S: State> ClientInner<S> {
     ) -> Result<Response> {
         let method = request.method().clone();
         let path = request.url().path().to_owned();
+        let max_attempts = self.config.max_attempts.max(1);
 
         if let Some(h) = headers {
             *request.headers_mut() = h;
         }
 
-        let response = self.client.execute(request).await?;
-        let status_code = response.status();
+        for attempt in 1..=max_attempts {
+            let cloned_request = request
+                .try_clone()
+                .ok_or_else(|| Error::validation("Request cannot be cloned for retry"))?;
 
-        if !status_code.is_success() {
+            let response = self.client.execute(cloned_request).await?;
+            let status_code = response.status();
+            let headers = response.headers().clone();
+
+            if status_code.is_success() {
+                return match response.json::<Option<Response>>().await? {
+                    Some(response) => Ok(response),
+                    None => Err(Error::status(
+                        StatusCode::NOT_FOUND,
+                        method,
+                        path,
+                        "Unable to find requested resource",
+                    )),
+                };
+            }
+
             let message = response.text().await.unwrap_or_default();
+            let final_message = if attempt > 1 {
+                format!("{message} (attempt {attempt}/{max_attempts})")
+            } else {
+                message
+            };
 
-            return Err(Error::status(status_code, method, path, message));
+            if !is_retryable(status_code) || attempt == max_attempts {
+                return Err(Error::status(status_code, method, path, final_message));
+            }
+
+            let retry_after = retry_after_delay(&headers);
+            let delay = retry_after.unwrap_or_else(|| {
+                let backoff =
+                    calculate_backoff(self.config.base_backoff, self.config.max_backoff, attempt);
+                let jitter_ns =
+                    rng().random_range(0..=backoff.as_nanos().min(u128::from(u64::MAX)) as u64);
+                let jitter = Duration::from_nanos(jitter_ns);
+
+                std::cmp::min(self.config.max_backoff, backoff.saturating_add(jitter))
+            });
+
+            sleep(delay).await;
         }
 
-        match response.json::<Option<Response>>().await? {
-            Some(response) => Ok(response),
-            None => Err(Error::status(
-                StatusCode::NOT_FOUND,
-                method,
-                path,
-                "Unable to find requested resource",
-            )),
-        }
+        Err(Error::status(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            method,
+            path,
+            format!("Retry attempts exhausted after {max_attempts} tries"),
+        ))
     }
 
     pub async fn server_time(&self) -> Result<Timestamp> {
@@ -400,6 +461,33 @@ impl<S: State> ClientInner<S> {
 
         self.request(request, None).await
     }
+}
+
+fn retry_after_delay(headers: &HeaderMap) -> Option<Duration> {
+    headers
+        .get(RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_secs)
+}
+
+fn calculate_backoff(base: Duration, max_backoff: Duration, attempt: usize) -> Duration {
+    let exponent = attempt.saturating_sub(1).min(31);
+    let factor = 1u32 << exponent;
+    let scaled = base.saturating_mul(factor);
+
+    std::cmp::min(scaled, max_backoff)
+}
+
+fn is_retryable(status_code: StatusCode) -> bool {
+    matches!(
+        status_code,
+        StatusCode::TOO_MANY_REQUESTS
+            | StatusCode::INTERNAL_SERVER_ERROR
+            | StatusCode::BAD_GATEWAY
+            | StatusCode::SERVICE_UNAVAILABLE
+            | StatusCode::GATEWAY_TIMEOUT
+    )
 }
 
 impl ClientInner<Unauthenticated> {
