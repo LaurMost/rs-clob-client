@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+pub mod model;
+
 use futures::{SinkExt as _, StreamExt as _};
 use serde::Serialize;
 use tokio::sync::mpsc;
